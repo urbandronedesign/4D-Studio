@@ -1,0 +1,19 @@
+services:
+  fdanyone:
+    image: 4danyone:spike
+    build:
+      context: .
+      dockerfile: Dockerfile
+    gpus: all
+    shm_size: "16gb"
+    environment:
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    stdin_open: true
+    tty: true
+    volumes:
+      # host folders come from docker/.env (see .env.example)
+      - ${FDA_MODELS:?set FDA_MODELS in docker/.env}:/app/models
+      - ${FDA_DATA:?set FDA_DATA in docker/.env}:/app/data
+    ports:
+      - "127.0.0.1:7860:7860"
+      - "127.0.0.1:7861:7861"

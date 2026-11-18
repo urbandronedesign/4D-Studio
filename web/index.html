@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4D Splat Player</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%237aa2ff'/%3E%3C/svg%3E">
+<style>
+  :root { --bg:#16171a; --panel:rgba(22,23,26,.82); --fg:#e8e8ea; --muted:#9a9ca3; --accent:#7aa2ff; --track:#3a3c44; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; overflow:hidden; }
+  canvas { position:fixed; inset:0; width:100%; height:100%; display:block; touch-action:none; }
+  .top { position:fixed; top:12px; left:16px; right:16px; display:flex; justify-content:space-between; gap:12px; pointer-events:none; }
+  .tag { background:var(--panel); padding:6px 10px; border-radius:8px; color:var(--muted); font-size:12px; }
+  .tag b { color:var(--fg); font-weight:600; }
+  .bar { position:fixed; left:16px; right:16px; bottom:16px; background:var(--panel); border-radius:12px; padding:10px 14px;
+         display:flex; align-items:center; gap:12px; backdrop-filter:blur(8px); }
+  button, select { background:transparent; color:var(--fg); border:1px solid var(--track); border-radius:8px; height:34px; padding:0 10px; font:inherit; cursor:pointer; }
+  button:hover, select:hover { border-color:var(--accent); }
+  #play { width:44px; font-size:16px; }
+  .slider { position:relative; flex:1; height:34px; display:flex; align-items:center; }
+  .buffer { position:absolute; left:0; right:0; height:4px; border-radius:2px; background:var(--track); overflow:hidden; pointer-events:none; }
+  .buffer i { position:absolute; top:0; bottom:0; left:0; width:0; background:#555a66; }
+  input[type=range] { position:relative; width:100%; margin:0; background:transparent; -webkit-appearance:none; appearance:none; }
+  input[type=range]::-webkit-slider-runnable-track { height:4px; background:transparent; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; margin-top:-5px; border-radius:50%; background:var(--accent); }
+  input[type=range]::-moz-range-track { height:4px; background:transparent; }
+  input[type=range]::-moz-range-thumb { width:14px; height:14px; border:0; border-radius:50%; background:var(--accent); }
+  #label { min-width:92px; text-align:right; font-variant-numeric:tabular-nums; color:var(--muted); }
+  .help { position:fixed; right:16px; bottom:78px; font-size:12px; color:var(--muted); background:var(--panel); padding:6px 10px; border-radius:8px; }
+  #msg { position:fixed; inset:0; display:grid; place-items:center; color:var(--muted); pointer-events:none; }
+  @media (max-width:640px) { .help, #speed, #loop { display:none; } .bar { gap:8px; padding:8px 10px; } #label { min-width:70px; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="top"><span class="tag" id="title">4D splat</span><span class="tag" id="stats">loading…</span></div>
+<div id="msg">Loading…</div>
+<div style="position:fixed;left:16px;bottom:72px;font-size:10px;color:#6b6d74">Rendered with <a href="https://github.com/playcanvas/engine" target="_blank" rel="noopener" style="color:#8b8d95">PlayCanvas</a> · splats trained with <a href="https://github.com/MrNeRF/LichtFeld-Studio" target="_blank" rel="noopener" style="color:#8b8d95">LichtFeld Studio</a> from <a href="https://github.com/ant-research/4DAnyone" target="_blank" rel="noopener" style="color:#8b8d95">4DAnyone</a></div>
+<div class="help">drag: orbit · right-drag / shift-drag: pan · wheel: zoom · space: play · ←/→: step · F: reframe</div>
+<div class="bar">
+  <button id="play" title="Play / pause (space)">▶</button>
+  <div class="slider"><div class="buffer"><i id="buf"></i></div><input id="seek" type="range" min="0" max="0" value="0"></div>
+  <span id="label">0 / 0</span>
+  <select id="speed" title="Playback speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
+  <select id="quality" title="Quality (spherical-harmonic bands)"></select>
+  <button id="loop" title="Loop">⟲ on</button>
+</div>
+<script type="module">
+import * as pc from 'https://cdn.jsdelivr.net/npm/playcanvas@2.23.3/build/playcanvas.mjs';
+
+const $ = (id) => document.getElementById(id);
+// Quality: ?q=sh0 / ?q=sh1 load the lighter copies in that subfolder (see make_lite.ps1); default is the original.
+const params = new URLSearchParams(location.search);
+const quality = /^[\w-]+$/.test(params.get('q') ?? '') && params.get('q') !== 'full' ? params.get('q') : '';
+const base = quality ? `${quality}/` : '';
+const manifest = await (await fetch(`${base}frames.json`, { cache: 'no-store' })).json();
+manifest.frames = manifest.frames.map((f) => base + f);
+const N = manifest.frames.length;
+if (!N) { $('msg').textContent = 'No frame_*.sog files yet.'; throw new Error('no frames'); }
+$('title').innerHTML = `<b>${manifest.run}</b> · ${N} frames · ${manifest.fps} fps · ${manifest.avgMB.toFixed(1)} MB/frame`;
+const LABELS = { full: 'Full (SH3)', sh1: 'Medium (SH1)', sh0: 'Light (SH0)' };
+for (const v of manifest.variants ?? ['full']) $('quality').add(new Option(LABELS[v] ?? v, v, false, v === (quality || 'full')));
+$('quality').onchange = (e) => { params.set('q', e.target.value); location.search = params.toString(); };
+
+// --- PlayCanvas app ---------------------------------------------------------------------------
+const canvas = $('c');
+const app = new pc.Application(canvas, { graphicsDeviceOptions: { antialias: false } });
+app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(pc.RESOLUTION_AUTO);
+window.addEventListener('resize', () => app.resizeCanvas());
+app.start();
+
+const camera = new pc.Entity('camera');
+camera.addComponent('camera', { clearColor: new pc.Color(0.086, 0.09, 0.102), fov: 40, nearClip: 0.01, farClip: 200 });
+app.root.addChild(camera);
+
+// Frames are in a Y-down (COLMAP) world: rotate 180° about X so Y is up and the subject faces +Z.
+const root = new pc.Entity('sequence');
+root.setLocalEulerAngles(180, 0, 0);
+app.root.addChild(root);
+const toView = ([x, y, z]) => new pc.Vec3(x, -y, -z);
+
+// --- orbit camera -----------------------------------------------------------------------------
+const home = { target: toView(manifest.center), yaw: 0, pitch: -5,
+  dist: manifest.radius / Math.tan((40 * Math.PI / 180) / 2) * 1.25 };
+const orbit = { ...home, target: home.target.clone() };
+function applyCamera() {
+  const q = new pc.Quat().setFromEulerAngles(orbit.pitch, orbit.yaw, 0);
+  const back = q.transformVector(new pc.Vec3(0, 0, 1)).mulScalar(orbit.dist);
+  camera.setPosition(orbit.target.clone().add(back));
+  camera.setRotation(q);
+}
+function reframe() { Object.assign(orbit, home, { target: home.target.clone() }); applyCamera(); }
+reframe();
+
+const pointers = new Map();
+let pinch = 0;
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); pointers.set(e.pointerId, e); });
+canvas.addEventListener('pointerup', (e) => { pointers.delete(e.pointerId); pinch = 0; });
+canvas.addEventListener('pointercancel', (e) => { pointers.delete(e.pointerId); pinch = 0; });
+canvas.addEventListener('pointermove', (e) => {
+  const prev = pointers.get(e.pointerId);
+  if (!prev) return;
+  const dx = e.clientX - prev.clientX, dy = e.clientY - prev.clientY;
+  pointers.set(e.pointerId, e);
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    if (pinch) orbit.dist = Math.min(50, Math.max(0.2, orbit.dist * pinch / d));
+    pinch = d;
+  } else if (e.buttons & 2 || e.buttons & 4 || e.shiftKey) {
+    const s = orbit.dist * 0.0015;
+    const right = camera.right.clone().mulScalar(-dx * s), up = camera.up.clone().mulScalar(dy * s);
+    orbit.target.add(right).add(up);
+  } else {
+    orbit.yaw -= dx * 0.3;
+    orbit.pitch = Math.min(89, Math.max(-89, orbit.pitch - dy * 0.3));
+  }
+  applyCamera();
+});
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  orbit.dist = Math.min(50, Math.max(0.2, orbit.dist * Math.exp(e.deltaY * 0.001)));
+  applyCamera();
+}, { passive: false });
+
+// --- streaming: keep a sliding window of frames around the playhead ------------------------------
+// Frames ahead of the playhead are fetched (PARALLEL at a time); frames that fall out of the window
+// are destroyed and their GPU/CPU memory released, so memory stays bounded whatever the length.
+const AHEAD = Number(params.get('ahead') ?? 40);     // frames prefetched ahead
+const BEHIND = Number(params.get('behind') ?? 4);    // frames kept behind (for stepping back)
+const START = Math.min(Number(params.get('start') ?? 12), N);  // frames buffered before playback (re)starts
+const PARALLEL = Number(params.get('parallel') ?? 4);
+let loop = true;
+const slots = new Array(N).fill(null);   // null | { state: 'loading'|'ready', asset, entity }
+let shown = -1, current = 0, inflight = 0, bytes = 0, t0 = performance.now(), buffering = true;
+
+const ahead = (i) => loop ? (i - current + N) % N : i - current;   // distance forward from playhead
+const inWindow = (i) => { const d = ahead(i); return (d >= 0 && d <= AHEAD) || (current - i >= 0 && current - i <= BEHIND); };
+function readyAhead() { let k = 0; while (k < N && slots[(current + k) % N]?.state === 'ready' && (loop || current + k < N)) k++; return k; }
+
+function release(i) {
+  const s = slots[i];
+  if (!s) return;
+  slots[i] = null;
+  if (s.entity) s.entity.destroy();
+  app.assets.remove(s.asset);
+  s.asset.unload();
+}
+function load(i) {
+  const asset = new pc.Asset(manifest.frames[i], 'gsplat', { url: manifest.frames[i] });
+  const slot = { state: 'loading', asset, entity: null };
+  slots[i] = slot; inflight++;
+  asset.once('load', () => {
+    inflight--;
+    bytes += manifest.sizes?.[i] ?? 0;
+    if (slots[i] !== slot || !inWindow(i)) { if (slots[i] === slot) release(i); else { app.assets.remove(asset); asset.unload(); } pump(); return; }
+    const e = new pc.Entity(manifest.frames[i]);
+    e.addComponent('gsplat', { asset });
+    e.enabled = false;
+    root.addChild(e);
+    slot.entity = e; slot.state = 'ready';
+    if (i === current) show(current);
+    pump();
+  });
+  asset.once('error', (err) => { console.error(manifest.frames[i], err); inflight--; if (slots[i] === slot) slots[i] = null; pump(); });
+  app.assets.add(asset);
+  app.assets.load(asset);
+}
+// Drop frames outside the window, then fetch the nearest missing frames ahead of the playhead.
+function pump() {
+  for (let i = 0; i < N; i++) if (slots[i] && i !== shown && !inWindow(i)) release(i);
+  for (let d = 0; d <= AHEAD && inflight < PARALLEL; d++) {
+    const i = loop ? (current + d) % N : current + d;
+    if (i >= N) break;
+    if (!slots[i]) load(i);
+  }
+  updateBuffer();
+}
+
+function updateBuffer() {
+  const k = readyAhead();
+  $('buf').style.left = `${(current / N) * 100}%`;
+  $('buf').style.width = `${(Math.min(k, N - current) / N) * 100}%`;
+  const secs = (performance.now() - t0) / 1000, mbps = bytes / 1048576 / secs;
+  const resident = slots.filter((s) => s?.state === 'ready').length;
+  const need = manifest.avgMB ? manifest.avgMB * manifest.fps * Number($('speed').value) : 0;
+  $('stats').textContent = `${buffering ? 'buffering · ' : ''}${k} ahead · ${resident} in memory` +
+    (bytes ? ` · ${mbps.toFixed(1)} MB/s${need ? ` (needs ${need.toFixed(0)})` : ''}` : '');
+}
+
+function show(i) {
+  current = i;
+  $('seek').value = i;
+  $('label').textContent = `${i + 1} / ${N}`;
+  if (slots[i]?.state === 'ready' && shown !== i) {
+    slots[i].entity.enabled = true;
+    if (shown >= 0 && slots[shown]?.entity) slots[shown].entity.enabled = false;
+    shown = i;
+    $('msg').style.display = 'none';
+  }
+  pump();
+}
+
+// --- playback -----------------------------------------------------------------------------------
+let playing = false, acc = 0;
+$('seek').max = N - 1;
+const setPlaying = (p) => { playing = p; $('play').textContent = p ? '❚❚' : '▶'; acc = 0; };
+$('play').onclick = () => setPlaying(!playing);
+$('loop').onclick = () => { loop = !loop; $('loop').textContent = loop ? '⟲ on' : '⟲ off'; };
+$('seek').oninput = (e) => { setPlaying(false); show(Number(e.target.value)); };
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
+  else if (e.code === 'ArrowRight') { setPlaying(false); show(Math.min(N - 1, current + 1)); }
+  else if (e.code === 'ArrowLeft') { setPlaying(false); show(Math.max(0, current - 1)); }
+  else if (e.code === 'KeyF') reframe();
+});
+app.on('update', (dt) => {
+  if (!playing) return;
+  // Stall when the buffer runs dry; resume once START frames are ready ahead (or the rest of the clip).
+  const k = readyAhead();
+  if (buffering) {
+    if (k >= Math.min(START, loop ? N : N - current)) { buffering = false; acc = 0; } else { updateBuffer(); return; }
+  }
+  acc += dt * manifest.fps * Number($('speed').value);
+  while (acc >= 1) {
+    acc -= 1;
+    let next = current + 1;
+    if (next >= N) { if (!loop) { setPlaying(false); return; } next = 0; }
+    if (slots[next]?.state !== 'ready') { buffering = true; acc = 0; updateBuffer(); return; }
+    show(next);
+  }
+});
+show(0);
+setPlaying(true);
+</script>
+</body>
+</html>

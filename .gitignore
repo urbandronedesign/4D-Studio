@@ -1,0 +1,17 @@
+# machine-specific config (created by setup.ps1)
+docker/.env
+
+# large or third-party content that setup.ps1 downloads / the image clones
+4DAnyone/
+models/
+data/
+_installers/
+web/tools/node_modules/
+node_modules/
+
+# logs and local outputs
+*.log
+__pycache__/
+*.pyc
+web/*.png
+app/*.png
