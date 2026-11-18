@@ -38,7 +38,7 @@ On a slow hard drive, builds and model loading crawl.
 ### Setup (one command, ~1 h, mostly downloads and the image build)
 
 ```powershell
-git clone https://github.com/<you>/4D-Studio.git
+git clone https://github.com/urbandronedesign/4D-Studio.git
 cd 4D-Studio
 .\setup.ps1 -Data D:\4DStudio\data -Models D:\4DStudio\models
 ```
